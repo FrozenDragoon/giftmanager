@@ -1,15 +1,26 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort, make_response, get_flashed_messages
-from functools import wraps
-from mailjet_rest import Client
-from datetime import datetime, timedelta
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
-import json, subprocess, hashlib
+import json
+import logging
 import os
 import random
-from dotenv import load_dotenv, set_key, dotenv_values
-load_dotenv()
+import subprocess
 
+from datetime import datetime, timedelta
+from functools import wraps
+
+from dotenv import load_dotenv, set_key, dotenv_values
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort, make_response, get_flashed_messages
+from mailjet_rest import Client  # type: ignore[import-untyped, import-not-found]
+
+if __name__ == "__main__":
+    import ipaddress
+    from logging_setup import logging_setup
+    from logging_setup import LoggingArgs
+    from tap import Tap
+
+
+load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
@@ -27,13 +38,16 @@ def update_gift_ideas_json(data):
     with open('ideas.json', 'w') as file:
         json.dump(data, file, indent=4)
 
+
 # Load user data from the JSON file
 with open('users.json', 'r') as file:
     users = json.load(file)
 
+
 # Load gift ideas data from the JSON file
 with open('ideas.json', 'r') as file:
     gift_ideas_data = json.load(file)
+
 
 # Define a decorator for requiring authentication
 def login_required(f):
@@ -45,6 +59,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
 @app.route('/change_email', methods=['POST'])
 @login_required
 def change_email():
@@ -53,7 +68,11 @@ def change_email():
     # Update the user's password in the JSON data (you may need to modify this)
     for user in users:
         if user['username'] == session['username']:
+            oldemail = user['email']
+            logger.debug("Old email '%s', new email '%s'", oldemail, newemail)
             user['email'] = newemail
+
+            logger.log(35, "User email successfully updated")
             break
 
     # Save the updated JSON data back to the file (you may need to modify this)
@@ -77,12 +96,12 @@ def utility_processor():
     return dict(get_full_name=get_full_name)
 
 
-
 @app.route('/')
 def index():
     if 'username' in session:
         return redirect(url_for('dashboard'))
     return redirect(url_for('login'))
+
 
 @app.route('/rundl')
 def run_script():
@@ -95,7 +114,8 @@ def run_script():
         error_message = f"Error occurred while running {script_name}: {e}\n\n"
         error_message += e.stderr  # Append the error details from stderr
         return render_template('script_output.html', script_output=error_message)
-    
+
+
 @app.route('/runemail')
 def run_email():
     script_name = 'mailjet.py'
@@ -107,6 +127,7 @@ def run_email():
         error_message = f"Error occurred while running {script_name}: {e}\n\n"
         error_message += e.stderr  # Append the error details from stderr
         return render_template('script_output.html', script_output=error_message)
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -128,8 +149,9 @@ def login():
                     return render_template('login.html')
 
         flash('Invalid login credentials. Please try again.', 'danger')
-
     return render_template('login.html')
+
+
 @app.route('/feedback', methods=['GET', 'POST'])
 def feedback():
     if request.method == 'POST':
@@ -160,8 +182,10 @@ def feedback():
         response = mailjet.send.create(data=data)
 
         if response.status_code == 200:
+            logger.success("Feedback sent successfully")
             flash('Feedback sent successfully', 'success')
         else:
+            logger.error("Failed to send feedback, response code '%i'", response.status_code)
             flash('Failed to send feedback', 'danger')
 
         return redirect(url_for('feedback'))
@@ -169,11 +193,9 @@ def feedback():
     return render_template('feedback.html')
 
 
-
 @app.route('/add2/', methods=['GET', 'POST'])
 @login_required
 def add2():
-
     if request.method == 'POST':
         # Handle the form submission, process the data, and add the idea
         user = request.form['user']
@@ -184,10 +206,9 @@ def add2():
         # You can customize how you retrieve the currently logged-in user here
         # For example, if you're storing the username in the session:
         added_by = session.get('username')
-        
+
         # Find the largest gift idea ID
         largest_gift_idea_id = max(idea['gift_idea_id'] for idea in gift_ideas_data)
-
 
         # Create a new idea object
         new_idea = {
@@ -221,8 +242,6 @@ def add2():
     return render_template('add2.html', user_list=user_list)
 
 
-
-
 # Route for the "Add Idea" page with a default user based on the selected userhash
 @app.route('/add_idea/<selected_user_id>', methods=['GET', 'POST'])
 @login_required
@@ -234,7 +253,7 @@ def add_idea(selected_user_id):
         name = request.form['name']
         description = request.form.get('description', '')
         link = request.form.get('link', '')
-        
+
         # You can customize how you retrieve the currently logged-in user here
         # For example, if you're storing the username in the session:
         added_by = session.get('username')
@@ -270,7 +289,6 @@ def add_idea(selected_user_id):
     return render_template('add_idea.html', user_list=user_list, gift_ideas=gift_ideas_data, default_user=selected_user_id)
 
 
-
 @app.route('/delete_idea/<int:idea_id>', methods=['DELETE'])
 @login_required
 def delete_idea(idea_id):
@@ -298,12 +316,13 @@ def delete_idea(idea_id):
 
     return '', 403  # Return a response with HTTP status code 403 (forbidden)
 
+
 def send_email_to_buyer_via_mailjet(buyer_username, idea_name, message_subject):
     # Find the idea bought by the buyer
     for idea in gift_ideas_data:
         if idea.get('bought_by') == buyer_username:
             buyer_email = get_user_email_by_username(buyer_username)
-            
+
             if buyer_email:
                 text_part = f"This ideas, '{idea_name}',has been deleted but you already BOUGHT IT."
 
@@ -330,12 +349,13 @@ def send_email_to_buyer_via_mailjet(buyer_username, idea_name, message_subject):
                 response = mailjet.send.create(data=data)
 
                 if response.status_code == 200:
-                    print('Email sent to buyer successfully')
+                    logger.log(35, 'Email sent to buyer successfully')
                 else:
-                    print('Failed to send email to buyer')
+                    logger.error('Failed to send email to buyer')
             else:
-                print(f'Buyer email not found for username: {buyer_username}')
+                logger.error(f'Buyer email not found for username: {buyer_username}')
             break
+
 
 def get_user_email_by_username(username):
     # Assuming you have a list of user data in JSON
@@ -366,7 +386,7 @@ def dashboard():
 
     current_user = next((user for user in sorted_users if user['username'] == session['username']), None)
 
-        # Move the current user to the top of the list
+    # Move the current user to the top of the list
     if current_user:
         sorted_users.remove(current_user)
         sorted_users.insert(0, current_user)
@@ -390,9 +410,12 @@ def dashboard():
     else:
         # Handle the case when user data is not found
         flash('User data not found', 'danger')
+        logger.error("User '%s' not found", session['username'])
+        logger.debug("Redirecting to login page")
         return redirect(url_for('login'))
 
     return render_template('dashboard.html', profile_info=profile_info, users=sorted_users, password_messages=password_messages, assigned_user=assigned_user)
+
 
 @app.route('/change_password', methods=['POST'])
 @login_required
@@ -436,11 +459,13 @@ def change_password():
     flash('Password successfully modified', 'success')
     return redirect(url_for('dashboard'))
 
+
 def find_idea_by_id(ideas, idea_id):
     for idea in ideas:
         if idea['gift_idea_id'] == idea_id:
             return idea
     return None
+
 
 @app.route('/mark_as_bought/<int:idea_id>', methods=['POST'])
 @login_required
@@ -459,6 +484,7 @@ def mark_as_bought(idea_id):
         flash('Idea not found', 'danger')
 
     return redirect(url_for('user_gift_ideas', selected_user_id=session['username']))
+
 
 @app.route('/mark_as_not_bought/<int:idea_id>', methods=['POST'])
 @login_required
@@ -481,6 +507,7 @@ def mark_as_not_bought(idea_id):
 
     return '', 204  # Return a response with HTTP status code 204 (no content)
 
+
 @app.route('/bought_items')
 @login_required
 def bought_items():
@@ -499,9 +526,7 @@ def get_full_name(user_id):
     for user in users:
         if user.get('username') == user_id:
             return user.get('full_name')
-    return None 
-
-
+    return None
 
 
 def get_user_full_name(selected_user_id):
@@ -509,7 +534,7 @@ def get_user_full_name(selected_user_id):
     for user in users:
         if user.get('username') == selected_user_id:
             return user.get('full_name')
-    return None 
+    return None
 
 
 @app.route('/user_gift_ideas/<selected_user_id>')
@@ -529,10 +554,11 @@ def user_gift_ideas(selected_user_id):
     if not user_gift_ideas:
         flash('No gift ideas for this user.', 'info')
         return redirect(url_for('noidea'))
-    
+
     user_namels = get_user_full_name(selected_user_id)
 
     return render_template('user_gift_ideas.html', user_gift_ideas=user_gift_ideas, user_namels=user_namels)
+
 
 @app.route('/my_ideas')
 @login_required
@@ -549,10 +575,12 @@ def my_ideas():
 
     return render_template('my_ideas.html', my_gift_ideas=my_gift_ideas)
 
+
 @app.route('/noidea')
 @login_required
 def noidea():
     return render_template('noideas.html')
+
 
 @app.route('/add_user', methods=['GET', 'POST'])
 @login_required
@@ -591,6 +619,7 @@ def add_user():
 
     return render_template('add_user.html')
 
+
 @app.route('/edit_idea/<int:idea_id>', methods=['GET', 'POST'])
 @login_required
 def edit_idea(idea_id):
@@ -612,7 +641,7 @@ def edit_idea(idea_id):
 
                 flash('Idea updated successfully!', 'success')
                 return redirect(url_for('user_gift_ideas', selected_user_id=idea['user_id']))
-            
+
             # Render the edit idea form with pre-filled data
             return render_template('edit_idea.html', idea=idea)
         else:
@@ -637,21 +666,20 @@ def admin_required(f):
     return decorated_function
 
 
-
 @app.route('/delete_default_profiles', methods=['GET', 'POST'])
 @login_required
 def delete_default_profiles():
     flag_file = 'default_profiles_deleted.flag'
-    
+
     # Check if the flag file exists
     if os.path.exists(flag_file):
         flash('Default profiles have already been deleted.', 'danger')
         return redirect(url_for('dashboard'))
-    
+
     # Load user data from the JSON file
     with open('users.json', 'r') as file:
         users = json.load(file)
-    
+
     if request.method == 'POST':
         password = request.form['password']
         current_user = session['username']
@@ -693,6 +721,7 @@ def delete_default_profiles():
 
     return render_template('delete_default_profiles.html')
 
+
 def check_password(username, password):
     with open('users.json', 'r') as file:
         users = json.load(file)
@@ -701,9 +730,11 @@ def check_password(username, password):
                 return verify_password_hash(user['password'], password)
     return False
 
+
 # Hash the password using Argon2
 def password_hash(password):
     return ph.hash(password)
+
 
 # Verify the hashed password
 def verify_password_hash(hash, password):
@@ -714,16 +745,19 @@ def verify_password_hash(hash, password):
 
 
 field_explanations = {
-    "FEED_SEND": "adress email you wish to receve the feedback from the form  ",
+    "FEED_SEND": "address email you wish to receive the feedback from the form  ",
     "MAILJET_API_KEY": "Mailjet API key",
     "MAILJET_API_SECRET": "Mailjet API secret key",
     "SECRET_KEY": "Flask secret key for browser data",
-    "SYSTEM_EMAIL": "System email that will send the mesaage related to the app, must be allowed in mailjet",
-    "DELETE_DAYS":"days delete"
+    "SYSTEM_EMAIL": "System email that will send the message related to the app, must be allowed in mailjet",
+    "DELETE_DAYS": "days delete"
 }
+
+
 # Function to get current .env values
 def get_env_values():
     return dotenv_values()
+
 
 @app.route('/setup', methods=['GET'])
 @login_required
@@ -742,6 +776,7 @@ def update_env():
             new_value = request.form[key]
             set_key('.env', key, new_value)
     return redirect(url_for('setup'))
+
 
 @app.route('/upload_files', methods=['POST'])
 @login_required
@@ -767,12 +802,12 @@ def download_files():
     file = request.args.get('file')
     if file not in ['ideas.json', 'users.json']:
         abort(404)
-    
+
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], file)
-    
+
     if not os.path.exists(file_path):
         abort(404)
-    
+
     return send_file(file_path, as_attachment=True)
 
 
@@ -781,7 +816,6 @@ def allowed_file(filename):
     Check if the file has a valid extension.
     """
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
 
 
 @app.route('/secret_santa', methods=['GET', 'POST'])
@@ -854,9 +888,6 @@ def secret_santa():
     return render_template('secret_santa.html', users=users)
 
 
-
-
-
 @app.route('/secret_santa_assignments', methods=['GET'])
 @login_required
 def secret_santa_assignments():
@@ -886,8 +917,45 @@ def secret_santa_assignments():
     return render_template('secret_santa_assignment.html', assigned_user=assigned_user, instructions=secret_santa_instructions)
 
 
-
-
-
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    class GiftArgs(Tap):
+        host: str = "0.0.0.0"  # Host
+        port: int = 5000
+
+        def _validate_host(self, host):
+            try:
+                ipaddress.IPv4Address(host)
+            except ipaddress.AddressValueError:
+                raise SystemExit(f"'{host}' is not a valid IP")
+            return
+
+        def process_args(self):
+            # Validate host is IP Addr
+            self._validate_host(self.host)
+
+    logArgs = LoggingArgs(underscores_to_dashes=True).parse_args(known_only=True)
+
+    logging_setup(logLevel=logArgs.log_level, logToFile=logArgs.logToFile)
+    logger = logging.getLogger(__name__)
+    logger.info("### GiftManager ###")
+    logger.log(35, "Logging setup completed")  # Success log Level
+    logger.info("INFO logging enabled")
+    logger.debug("Debug logging enabled")
+    logger.log(5, "Spam logging enabled")  # Spam Log Level
+
+    logger.debug("logArgs: %s", logArgs)
+    if logArgs.extra_args:
+        logger.debug("Unparsed Args: %s", logArgs.extra_args)
+    giftArgs = GiftArgs().parse_args(logArgs.extra_args)
+    logging.debug("giftArgs: %s", giftArgs)
+
+    flask_debug = False
+    if logArgs.log_level <= 10:
+        flask_debug = True
+
+    app.logger.setLevel(logArgs.log_level)
+    app.run(host=giftArgs.host, port=giftArgs.port, debug=flask_debug)
+
+    logger.info("Exiting...")
+else:
+    logger = logging.getLogger(__name__)
